@@ -20,6 +20,8 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import { checkHttpEndpoint } from "../../src/compliance/http402.js";
+import { safeFetch, validateTarget } from "./safeFetch.js";
 import { fetchEarthquakes, fetchWeatherPoint, fetchWorldBankIndicator } from "./sources/index.js";
 
 const BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD" as const;
@@ -47,6 +49,7 @@ const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 const server = new x402ResourceServer(facilitatorClient).register(NETWORK, new ExactEvmScheme());
 
 const app = express();
+app.set("trust proxy", true);
 
 /**
  * Route price list. All prices are illustrative (this is a local demo, never deployed).
@@ -55,6 +58,21 @@ const app = express();
  * though we do not actually list it per BRIEF scope ("デプロイと掲載はしない").
  */
 const routes = {
+  "GET /v1/preflight": {
+    accepts: [{ scheme: "exact" as const, price: "$0.01", network: NETWORK, payTo }],
+    description: "Pre-payment check for an x402 endpoint: sends one unauthenticated GET to the target https URL and reports whether its 402 challenge is well-formed (x402 version, accepts[], scheme, network, amount, asset, payTo) so an agent can decide whether to pay it. Moves no funds.",
+    mimeType: "application/json",
+    extensions: {
+      ...declareDiscoveryExtension({
+        input: { url: "https://example.com/paid-endpoint" },
+        inputSchema: {
+          properties: { url: { type: "string", description: "https URL of the x402-protected endpoint to check (port 443, public host)" } },
+          required: ["url"],
+        },
+        output: { example: { url: "https://example.com/paid-endpoint", verdict: "ok", isStatus402: true, transport: "header", accepts: [] } },
+      }),
+    },
+  },
   "GET /v1/earthquakes/:feed": {
     accepts: [{ scheme: "exact" as const, price: "$0.002", network: NETWORK, payTo }],
     description: "USGS earthquake feed passthrough (public domain, US govt data). :feed is one of significant_week, significant_day, 4.5_week, 2.5_week, all_day, all_hour.",
@@ -110,11 +128,12 @@ const OPENAPI = {
   info: {
     title: "SelectaRank Data Gateway",
     version: "1.0.0",
-    description: "Pay-per-call access to public-domain data (USGS earthquakes, NOAA/NWS forecasts, World Bank indicators) over x402 on Base USDC. No account or API key.",
-    "x-guidance": "Three GET endpoints, each priced per call in USDC on Base. GET /v1/earthquakes/{feed} (feed: significant_week, significant_day, 4.5_week, 2.5_week, all_day, all_hour), GET /v1/weather/{lat}/{lon} (US locations only), GET /v1/worldbank/{country}/{indicator} (e.g. JP, NY.GDP.MKTP.CD). Responses wrap upstream data with source and license metadata.",
+    description: "Pay-per-call access to public-domain data (USGS earthquakes, NOAA/NWS forecasts, World Bank indicators) plus an x402 endpoint pre-payment checker over x402 on Base USDC. No account or API key.",
+    "x-guidance": "Four GET endpoints, each priced per call in USDC on Base. GET /v1/preflight?url=<https URL> checks whether a target x402 endpoint returns a well-formed 402 challenge before you pay it (one unauthenticated GET, no funds move). GET /v1/earthquakes/{feed} (feed: significant_week, significant_day, 4.5_week, 2.5_week, all_day, all_hour), GET /v1/weather/{lat}/{lon} (US locations only), GET /v1/worldbank/{country}/{indicator} (e.g. JP, NY.GDP.MKTP.CD). Responses wrap upstream data with source and license metadata.",
     contact: { email: "selectarank@sales.tosaka-office.jp" },
   },
   paths: {
+    "/v1/preflight": { get: { operationId: "preflight", summary: "Check that an x402 endpoint's 402 challenge is well-formed before paying it", tags: ["x402"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.010000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "url", in: "query", required: true, schema: { type: "string" }, description: "https URL (port 443, public host) of the x402 endpoint to check" }], responses: { "200": { description: "Compliance report: verdict, HTTP status, transport (header/body), parsed accepts[] with per-field status" }, "400": { description: "Invalid or disallowed url" }, "402": { description: "Payment Required" } } } },
     "/v1/earthquakes/{feed}": { get: { operationId: "earthquakes", summary: "USGS earthquake feed", tags: ["Earthquakes"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.002000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "feed", in: "path", required: true, schema: { type: "string" }, description: "significant_week, significant_day, 4.5_week, 2.5_week, all_day, all_hour" }], responses: { "200": { description: "GeoJSON feed with source metadata" }, "402": { description: "Payment Required" } } } },
     "/v1/weather/{lat}/{lon}": { get: { operationId: "weather", summary: "NOAA/NWS forecast for a US point", tags: ["Weather"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.003000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "lat", in: "path", required: true, schema: { type: "string" } }, { name: "lon", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Forecast with source metadata" }, "402": { description: "Payment Required" } } } },
     "/v1/worldbank/{country}/{indicator}": { get: { operationId: "worldbank", summary: "World Bank indicator", tags: ["Economics"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.002000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "country", in: "path", required: true, schema: { type: "string" } }, { name: "indicator", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Indicator series with source metadata" }, "402": { description: "Payment Required" } } } },
@@ -141,6 +160,19 @@ app.get("/v1/worldbank/:country/:indicator", async (req, res) => {
   const result = await fetchWorldBankIndicator(req.params.country, req.params.indicator);
   if (!result.ok) return res.status(502).json({ error: result.error });
   res.json({ meta: { source: "World Bank", license: "CC BY 4.0", attribution: "World Bank Open Data", fetchedAt: new Date().toISOString() }, data: result.data });
+});
+
+app.get("/v1/preflight", async (req, res) => {
+  const target = typeof req.query.url === "string" ? req.query.url : "";
+  try { validateTarget(target); } catch (e) { return res.status(400).json({ error: e instanceof Error ? e.message : "invalid url" }); }
+  const r = await checkHttpEndpoint(target, safeFetch);
+  const verdict = r.networkError ? "unreachable" : !r.isStatus402 ? "not_402" : r.compliant ? (r.strictlyCompliant ? "ok" : "ok_minimal") : "malformed";
+  res.json({
+    meta: { checkedAt: r.timestamp, checker: "SelectaRank x402 preflight", note: "One unauthenticated GET; no payment was made." },
+    url: r.url, verdict, httpStatus: r.httpStatus, isStatus402: r.isStatus402, transport: r.transportStyle,
+    x402Version: r.x402VersionValue, acceptsCount: r.acceptsCount, compliant: r.compliant, strictlyCompliant: r.strictlyCompliant,
+    acceptItems: r.acceptItems, notes: r.notes.slice(0, 20), error: r.networkError,
+  });
 });
 
 app.get("/healthz", (_req, res) => res.json({ ok: true, testMode, network: NETWORK }));

@@ -154,7 +154,7 @@ function checkAcceptItem(
 
 const FETCH_TIMEOUT_MS = 10_000;
 
-export async function checkHttpEndpoint(url: string): Promise<HttpComplianceResult> {
+export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = fetch): Promise<HttpComplianceResult> {
   const timestamp = new Date().toISOString();
   const notes: string[] = [];
   const controller = new AbortController();
@@ -163,7 +163,7 @@ export async function checkHttpEndpoint(url: string): Promise<HttpComplianceResu
   let res: Response;
   try {
     // Plain unauthenticated GET. No X-PAYMENT header, no facilitator call, no money moves.
-    res = await fetch(url, {
+    res = await fetchImpl(url, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,
