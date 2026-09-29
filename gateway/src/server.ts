@@ -105,6 +105,24 @@ const routes = {
   },
 };
 
+const OPENAPI = {
+  openapi: "3.1.0",
+  info: {
+    title: "SelectaRank Data Gateway",
+    version: "1.0.0",
+    description: "Pay-per-call access to public-domain data (USGS earthquakes, NOAA/NWS forecasts, World Bank indicators) over x402 on Base USDC. No account or API key.",
+    "x-guidance": "Three GET endpoints, each priced per call in USDC on Base. GET /v1/earthquakes/{feed} (feed: significant_week, significant_day, 4.5_week, 2.5_week, all_day, all_hour), GET /v1/weather/{lat}/{lon} (US locations only), GET /v1/worldbank/{country}/{indicator} (e.g. JP, NY.GDP.MKTP.CD). Responses wrap upstream data with source and license metadata.",
+    contact: { email: "selectarank@sales.tosaka-office.jp" },
+  },
+  paths: {
+    "/v1/earthquakes/{feed}": { get: { operationId: "earthquakes", summary: "USGS earthquake feed", tags: ["Earthquakes"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.002000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "feed", in: "path", required: true, schema: { type: "string" }, description: "significant_week, significant_day, 4.5_week, 2.5_week, all_day, all_hour" }], responses: { "200": { description: "GeoJSON feed with source metadata" }, "402": { description: "Payment Required" } } } },
+    "/v1/weather/{lat}/{lon}": { get: { operationId: "weather", summary: "NOAA/NWS forecast for a US point", tags: ["Weather"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.003000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "lat", in: "path", required: true, schema: { type: "string" } }, { name: "lon", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Forecast with source metadata" }, "402": { description: "Payment Required" } } } },
+    "/v1/worldbank/{country}/{indicator}": { get: { operationId: "worldbank", summary: "World Bank indicator", tags: ["Economics"], "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: "0.002000" }, protocols: [{ x402: {} }] }, parameters: [{ name: "country", in: "path", required: true, schema: { type: "string" } }, { name: "indicator", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Indicator series with source metadata" }, "402": { description: "Payment Required" } } } },
+  },
+};
+app.get("/openapi.json", (_req, res) => res.json(OPENAPI));
+app.get("/", (_req, res) => res.type("text/plain").send("SelectaRank Data Gateway: x402 pay-per-call public data (USGS, NOAA/NWS, World Bank). Spec: /openapi.json\n"));
+
 app.use(paymentMiddleware(routes as any, server));
 
 app.get("/v1/earthquakes/:feed", async (req, res) => {
@@ -127,7 +145,9 @@ app.get("/v1/worldbank/:country/:indicator", async (req, res) => {
 
 app.get("/healthz", (_req, res) => res.json({ ok: true, testMode, network: NETWORK }));
 
-app.listen(PORT, () => {
+if (!process.env.VERCEL) app.listen(PORT, () => {
   console.log(`x402 bundled-data gateway listening on http://localhost:${PORT}`);
   console.log(`try:  curl -i http://localhost:${PORT}/v1/earthquakes/significant_week   (expect HTTP 402)`);
 });
+
+export default app;
