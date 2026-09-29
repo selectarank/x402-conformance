@@ -1,0 +1,28 @@
+{
+  "name": "x402-conformance",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "description": "S2: x402/MCP endpoint compliance checker + monitor. S3: bundled free-data x402 gateway (local).",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsx src/cli.ts check",
+    "check-mcp": "tsx src/cli.ts check-mcp",
+    "sweep": "tsx src/cli.ts sweep",
+    "gateway": "tsx gateway/src/server.ts"
+  },
+  "dependencies": {
+    "@x402/core": "^2.27.0",
+    "@x402/evm": "^2.27.0",
+    "@x402/express": "^2.27.0",
+    "@x402/extensions": "^2.27.0",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "_note": "Metadata prepared for a future x402 Bazaar listing of this gateway. NOT submitted anywhere and the gateway is NOT deployed (ops/BRIEF.md S3 scope: 'デプロイと掲載はしない'). Each route already carries this same discovery info live (see gateway/src/server.ts, declareDiscoveryExtension calls) — this file is a human-readable, submission-ready copy of the same facts, for the future listing step.",
+  "serviceName": "Open Data Toll Booth (working title)",
+  "homepage": "http://localhost:4021",
+  "description": "Bundles three permissively-licensed free public data sources (USGS earthquakes, NOAA/NWS weather, World Bank indicators) behind pay-per-call x402 HTTP endpoints, so an agent can fetch any of them with a single micropayment instead of registering for three separate free-tier accounts.",
+  "tags": ["data", "aggregator", "gateway", "public-data", "weather", "earthquakes", "economics", "open-data"],
+  "iconUrl": null,
+  "network": "eip155:84532",
+  "networkNote": "Base Sepolia testnet by default (FACILITATOR_NETWORK env var). Switch to eip155:8453 (Base mainnet) only once EVM_PAYTO_ADDRESS is a real, owned wallet.",
+  "facilitator": "https://x402.org/facilitator",
+  "payToStatus": "TEST MODE placeholder (0x000000000000000000000000000000000000dEaD) until EVM_PAYTO_ADDRESS is set to a real wallet",
+  "resources": [
+    {
+      "routeTemplate": "/v1/earthquakes/:feed",
+      "method": "GET",
+      "price": "$0.002",
+      "description": "USGS earthquake feed passthrough (public domain, US govt data).",
+      "mimeType": "application/geo+json",
+      "upstreamSource": {
+        "name": "USGS Earthquake Hazards Program",
+        "license": "US Public Domain",
+        "licenseCheckedAt": "2026-09-29",
+        "licenseCheckedVia": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+        "resaleAllowed": true
+      },
+      "pathParams": { "feed": { "type": "string", "description": "USGS feed name, e.g. significant_week", "required": true } }
+    },
+    {
+      "routeTemplate": "/v1/weather/:lat/:lon",
+      "method": "GET",
+      "price": "$0.003",
+      "description": "NOAA/NWS forecast passthrough for a lat/lon point (public domain, US govt data, US locations only).",
+      "mimeType": "application/geo+json",
+      "upstreamSource": {
+        "name": "NOAA National Weather Service API",
+        "license": "US Public Domain (with non-endorsement / non-misrepresentation conditions)",
+        "licenseCheckedAt": "2026-09-29",
+        "licenseCheckedVia": "https://www.weather.gov/disclaimer",
+        "resaleAllowed": true,
+        "technicalNote": "api.weather.gov expects an identifying User-Agent header; this is handled server-side, not by the caller."
+      },
+      "pathParams": {
+        "lat": { "type": "string", "description": "Latitude, e.g. 38.8894", "required": true },
+        "lon": { "type": "string", "description": "Longitude, e.g. -77.0352", "required": true }
+      }
+    },
+    {
+      "routeTemplate": "/v1/worldbank/:country/:indicator",
+      "method": "GET",
+      "price": "$0.002",
+      "description": "World Bank open data indicator passthrough (CC BY 4.0, attribution: World Bank).",
+      "mimeType": "application/json",
+      "upstreamSource": {
+        "name": "World Bank Open Data API",
+        "license": "CC BY 4.0",
+        "licenseCheckedAt": "2026-09-29",
+        "licenseCheckedVia": "https://datacatalog.worldbank.org/public-licenses",
+        "resaleAllowed": true,
+        "attributionRequired": true,
+        "attributionImplementation": "Every response includes meta.source='World Bank' and meta.license='CC BY 4.0'; data is republished verbatim (no modification), per license condition to flag any changes."
+      },
+      "pathParams": {
+        "country": { "type": "string", "description": "ISO country code, e.g. JP", "required": true },
+        "indicator": { "type": "string", "description": "World Bank indicator code, e.g. NY.GDP.MKTP.CD", "required": true }
+      }
+    }
+  ],
+  "excludedCandidateSources": [
+    {
+      "name": "CoinGecko free API",
+      "reason": "Free-tier terms restrict redistribution/resale of the data; excluded."
+    },
+    {
+      "name": "OpenStreetMap / Nominatim",
+      "reason": "ODbL share-alike plus a usage policy that discourages heavy scripted/production use; poor fit for an always-on paid resale gateway. Not included in this build."
+    },
+    {
+      "name": "Japan e-Stat (政府統計の総合窓口)",
+      "reason": "政府標準利用規約2.0 permits commercial reuse, but requires a free `appId` registration, which would break the zero-setup local demo. Good v2 candidate, not included now."
+    }
+  ],
+  "deploymentStatus": "NOT deployed. Runs locally only via `npm run gateway` (see ops/S2S3/STATUS.md). This file exists so that if/when the user approves deployment + listing, the submission step is a copy-paste rather than a research step."
+}
