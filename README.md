@@ -32,7 +32,8 @@ curl -i localhost:4021/v1/earthquakes/significant_week   # expect HTTP 402
 ## Status / limitations
 
 - Early (v0.1). Type-checks with `tsc`; the gateway was verified to return HTTP 402 challenges locally. No automated test suite.
-- The gateway is a demo: prices are illustrative, defaults to the Base Sepolia testnet, and it is not deployed or listed on the Bazaar. `gateway/bazaar_listing_metadata.json` is unsubmitted draft metadata.
+- The gateway (`gateway/`) is deployed at https://selectarank-data.vercel.app (Base mainnet USDC, prices in the OpenAPI at `/openapi.json`). Sales to date: 0. It is not yet listed on the Bazaar. `gateway/bazaar_listing_metadata.json` is draft metadata.
+- `sweep` sends plain GETs; an endpoint that only accepts POST returns 404/405 and is reported as a failure. Treat those as "not testable with GET", not as a spec violation.
 - Not an official x402 or Coinbase project.
 
 License: MIT.
