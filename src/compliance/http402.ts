@@ -1,5 +1,5 @@
 /**
- * Validates a live x402 HTTP endpoint's 402 response against the spec.
+ * Validates a live x402 HTTP endpoint 402 response against the spec.
  *
  * Checklist (per ops/BRIEF.md / task instructions): accepts array, scheme, network,
  * maxAmountRequired, payTo, asset, resource, description, mimeType, outputSchema.
@@ -9,13 +9,25 @@
  * 2025-12-09) renamed them, and real facilitators emit a hybrid of both.
  *
  * IMPORTANT: this only ever issues a plain, unauthenticated GET. It never attaches an
- * X-PAYMENT header and never calls a facilitator's /verify or /settle. No payment is ever
- * made or attempted, per ops/BRIEF.md's "外向きの操作は一切しない" / "支払いをしない" rule.
+ * X-PAYMENT header and never calls a facilitator /verify or /settle. No payment is ever
+ * made or attempted, per ops/BRIEF.md read-only rule (no outbound action, no payment).
  */
 
 import type { PaymentRequiredBodyLoose, PaymentRequirementsLoose } from "../types.js";
 
-export type FieldStatus = "present" | "missing" | "wrong_type";
+export type FieldStatus = "present" | "missing" | "wrong_type" | "invalid_value";
+
+/**
+ * Schemes the x402 spec currently defines (specs/x402-specification-v1.md section 5.1.2
+ * and specs/x402-specification-v2.md): "exact" is the only one in either spec as of this
+ * writing. A field that is a non-empty string but not in this list (for example a typo
+ * like "exac") is "invalid_value", not "present". Extend this list if the spec adds a
+ * scheme.
+ */
+const KNOWN_SCHEMES = new Set(["exact"]);
+
+/** EVM contract-address shape: 0x + 40 hex chars. Every asset observed so far is one of these. */
+const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
 export interface AcceptItemCheck {
   index: number;
@@ -31,7 +43,7 @@ export interface AcceptItemCheck {
   mimeType: FieldStatus;
   outputSchema: FieldStatus; // optional; "missing" is not a hard failure
   maxTimeoutSeconds: FieldStatus;
-  coreOk: boolean; // scheme+network+amount+asset+payTo+resourceUrl+maxTimeoutSeconds all present
+  coreOk: boolean; // scheme+network+amount+asset+payTo+resourceUrl+maxTimeoutSeconds all present AND valid
 }
 
 export interface HttpComplianceResult {
@@ -47,19 +59,21 @@ export interface HttpComplianceResult {
   /**
    * Where the PaymentRequired payload was actually found. Per specs/transports-v1/http.md
    * the challenge is the JSON response BODY; per specs/transports-v2/http.md (the current
-   * spec, 2025-12-9) it instead lives in a base64-encoded `PAYMENT-REQUIRED` response
-   * header, and "response bodies are a server implementation concern" (often `{}`). Both
-   * are treated as spec-compliant transports; we just record which one we saw.
+   * spec, 2025-12-9) it instead lives in a base64-encoded PAYMENT-REQUIRED response
+   * header, and response bodies are an implementation-defined concern there. Both are
+   * treated as spec-compliant transports; we just record which one we saw.
    */
   transportStyle: "body" | "header" | "both" | "neither";
   paymentRequiredHeaderPresent: boolean;
   paymentRequiredHeaderDecodeError?: string;
+  /** Set when both channels carry an accepts[] and their core fields disagree (see transportsAgree). */
+  transportMismatch: boolean;
   x402Version: FieldStatus;
   x402VersionValue?: number;
   errorField: FieldStatus; // "error" string (required in v1, optional in v2)
   acceptsArray: FieldStatus; // present and non-empty array
   acceptsCount: number;
-  topLevelResourceInfo: "present" | "absent"; // v2-style top-level `resource` object
+  topLevelResourceInfo: "present" | "absent"; // v2-style top-level resource object
   acceptItems: AcceptItemCheck[];
   /** Core-required-fields compliant across the whole accepts array (spec-lenient: v1 OR v2 field names). */
   compliant: boolean;
@@ -84,21 +98,64 @@ function statusOf(value: unknown, expect: "string" | "number" | "object" | "arra
   }
 }
 
+/**
+ * Amount fields (maxAmountRequired/amount) carry token base-units, which can exceed
+ * Number.MAX_SAFE_INTEGER. Both specs model them as a decimal STRING. A native JS number
+ * risks silent precision loss upstream and is flagged, not just a looser "present". A
+ * negative value is never a valid amount to charge.
+ */
+function statusOfAmount(value: unknown): FieldStatus {
+  const base = statusOf(value, "number");
+  if (base !== "present") return base;
+  if (typeof value === "number") return "invalid_value"; // spec wants a string, see comment above
+  const n = Number(value);
+  return n >= 0 ? "present" : "invalid_value";
+}
+
+/** scheme must be a non-empty string AND a value the spec actually defines. */
+function statusOfScheme(value: unknown): FieldStatus {
+  const base = statusOf(value, "string");
+  if (base !== "present") return base;
+  return KNOWN_SCHEMES.has(value as string) ? "present" : "invalid_value";
+}
+
+/**
+ * network and asset are both non-empty strings, but they mean opposite things: asset is
+ * an EVM contract address, network is a chain identifier and must never look like one.
+ * Checking the shape, not just presence, catches the two fields being swapped (for
+ * example a config bug).
+ */
+function statusOfNetwork(value: unknown): FieldStatus {
+  const base = statusOf(value, "string");
+  if (base !== "present") return base;
+  return EVM_ADDRESS_RE.test(value as string) ? "invalid_value" : "present";
+}
+
+function statusOfAsset(value: unknown): FieldStatus {
+  const base = statusOf(value, "string");
+  if (base !== "present") return base;
+  return EVM_ADDRESS_RE.test(value as string) ? "present" : "invalid_value";
+}
+
 function checkAcceptItem(
   item: PaymentRequirementsLoose,
   index: number,
   topLevelResource: { url?: unknown; description?: unknown; mimeType?: unknown } | undefined,
 ): AcceptItemCheck {
-  const scheme = statusOf(item.scheme, "string");
-  const network = statusOf(item.network, "string");
+  const scheme = statusOfScheme(item.scheme);
+  const network = statusOfNetwork(item.network);
 
-  const hasMax = statusOf(item.maxAmountRequired, "number") === "present";
-  const hasAmount = statusOf(item.amount, "number") === "present";
-  const amount: FieldStatus = hasMax || hasAmount ? "present" : "missing";
+  const maxStatus = item.maxAmountRequired !== undefined ? statusOfAmount(item.maxAmountRequired) : "missing";
+  const amountStatus = item.amount !== undefined ? statusOfAmount(item.amount) : "missing";
+  const hasMax = maxStatus === "present";
+  const hasAmount = amountStatus === "present";
+  // "present" wins if either field is valid; otherwise surface the more specific problem
+  // (invalid_value/wrong_type) instead of collapsing a bad value down to a bare "missing".
+  const amount: FieldStatus = hasMax || hasAmount ? "present" : maxStatus !== "missing" ? maxStatus : amountStatus;
   const amountFieldUsed: AcceptItemCheck["amountFieldUsed"] =
     hasMax && hasAmount ? "both" : hasMax ? "maxAmountRequired" : hasAmount ? "amount" : "none";
 
-  const asset = statusOf(item.asset, "string");
+  const asset = statusOfAsset(item.asset);
 
   const hasPayTo = statusOf(item.payTo, "string") === "present";
   const hasRecipient = statusOf(item.recipient, "string") === "present";
@@ -152,6 +209,25 @@ function checkAcceptItem(
   };
 }
 
+/**
+ * When a server emits an accepts[] in BOTH the v1 body and the v2 PAYMENT-REQUIRED header
+ * (transportStyle "both"), the two must agree. A server (or a proxy sitting in front of
+ * it) that lets the two drift apart on amount/payTo/scheme/asset is a real integrity
+ * problem a caller relying on just one channel would never see.
+ */
+function transportsAgree(bodyAccepts: PaymentRequirementsLoose[], headerAccepts: PaymentRequirementsLoose[]): boolean {
+  if (bodyAccepts.length !== headerAccepts.length) return false;
+  return bodyAccepts.every((b, i) => {
+    const h = headerAccepts[i];
+    if (!h) return false;
+    const bAmount = b.maxAmountRequired ?? b.amount;
+    const hAmount = h.maxAmountRequired ?? h.amount;
+    const bPayTo = b.payTo ?? b.recipient;
+    const hPayTo = h.payTo ?? h.recipient;
+    return String(bAmount) === String(hAmount) && String(bPayTo) === String(hPayTo) && b.scheme === h.scheme && b.asset === h.asset;
+  });
+}
+
 const FETCH_TIMEOUT_MS = 10_000;
 
 export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = fetch): Promise<HttpComplianceResult> {
@@ -180,6 +256,7 @@ export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = f
       bodyParsedAsJson: false,
       transportStyle: "neither",
       paymentRequiredHeaderPresent: false,
+      transportMismatch: false,
       x402Version: "missing",
       errorField: "missing",
       acceptsArray: "missing",
@@ -222,7 +299,7 @@ export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = f
   }
 
   // Per specs/transports-v2/http.md (the current spec, 2025-12-9): the PaymentRequired
-  // payload is delivered as base64-encoded JSON in a `PAYMENT-REQUIRED` response header,
+  // payload is delivered as base64-encoded JSON in a PAYMENT-REQUIRED response header,
   // NOT in the body. specs/transports-v1/http.md instead puts it in the JSON body. Real
   // servers observed in the wild (ops/S2S3/out/bazaar_raw_sample.json) do either, so we
   // check both and accept whichever one actually carries a valid payload.
@@ -244,9 +321,16 @@ export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = f
 
   let transportStyle: HttpComplianceResult["transportStyle"];
   let effectiveBody: PaymentRequiredBodyLoose | undefined;
+  let transportMismatch = false;
   if (bodyHasAccepts && headerHasAccepts) {
     transportStyle = "both";
     effectiveBody = body;
+    const bodyAccepts = body!.accepts as PaymentRequirementsLoose[];
+    const headerAccepts = headerBody!.accepts as PaymentRequirementsLoose[];
+    if (!transportsAgree(bodyAccepts, headerAccepts)) {
+      transportMismatch = true;
+      notes.push("body accepts[] and PAYMENT-REQUIRED header accepts[] disagree on scheme/network/amount/asset/payTo");
+    }
   } else if (headerHasAccepts) {
     transportStyle = "header";
     effectiveBody = headerBody;
@@ -272,6 +356,7 @@ export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = f
       transportStyle,
       paymentRequiredHeaderPresent: !!paymentRequiredHeaderRaw,
       paymentRequiredHeaderDecodeError,
+      transportMismatch,
       x402Version: "missing",
       errorField: "missing",
       acceptsArray: "missing",
@@ -306,6 +391,7 @@ export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = f
     isStatus402 &&
     x402VersionStatus === "present" &&
     acceptsNonEmpty &&
+    !transportMismatch &&
     acceptItems.every((a) => a.coreOk);
 
   const strictlyCompliant =
@@ -324,6 +410,7 @@ export async function checkHttpEndpoint(url: string, fetchImpl: typeof fetch = f
     transportStyle,
     paymentRequiredHeaderPresent: !!paymentRequiredHeaderRaw,
     paymentRequiredHeaderDecodeError,
+    transportMismatch,
     x402Version: x402VersionStatus,
     x402VersionValue,
     errorField,

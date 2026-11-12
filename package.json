@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsx src/cli.ts check",
     "check-mcp": "tsx src/cli.ts check-mcp",
+    "test": "tsx --test src/compliance/*.test.ts",
     "sweep": "tsx src/cli.ts sweep",
     "gateway": "tsx gateway/src/server.ts"
   },
